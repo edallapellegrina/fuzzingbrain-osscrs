@@ -1,0 +1,13 @@
+diff --git a/cJSON.c b/cJSON.c
+index 61483d9..355619e 100644
+--- a/cJSON.c
++++ b/cJSON.c
+@@ -409,7 +409,7 @@ CJSON_PUBLIC(char*) cJSON_SetValuestring(cJSON *object, const char *valuestring)
+         return NULL;
+     }
+     /* return NULL if the object is corrupted or valuestring is NULL */
+-    if (object->valuestring == NULL || valuestring == NULL)
++    if (object->valuestring == NULL)
+     {
+         return NULL;
+     }

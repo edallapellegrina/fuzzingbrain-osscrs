@@ -1,0 +1,28 @@
+# OSS-CRS compose for FuzzingBrain
+
+run_env: local
+docker_registry: local
+
+oss_crs_infra:
+  cpuset: "0-1"
+  memory: "4G"
+
+fuzzingbrain:
+  source:
+    local_path: /path/to/fuzzingbrain
+  cpuset: "2-3"
+  memory: "8G"
+
+  volumes:
+    - /app/workspace:/app/workspace
+    - /var/run/docker.sock:/var/run/docker.sock
+
+  # Make host.docker.internal resolvable inside the container
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+
+  # Env vars consumed by fb_wrapper.sh and sitecustomize.py
+  additional_env:
+    FUZZBRAIN_TARGET: "example"
+    FUZZBRAIN_LLM_ENDPOINT: "http://host.docker.internal:11435/v1"
+    FUZZBRAIN_LLM_KEY: "dummykey"

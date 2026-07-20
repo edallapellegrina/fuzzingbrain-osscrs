@@ -1,0 +1,11 @@
+{
+  "task_id": "74ef776d-a4c5-433c-8375-d17372b47416",
+  "type": "delta",
+  "harnesses_included": true,
+  "deadline": 1775508106000,
+  "focus": "repo",
+  "project_name": "vuln-test-repo",
+  "source": null,
+  "metadata": {},
+  "state": ""
+}

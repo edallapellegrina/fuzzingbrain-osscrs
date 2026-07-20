@@ -1,0 +1,57 @@
+# Environment/configuration files. Only .template variants are committed
+*.env
+*.yaml
+!*.env.template
+!*.yaml.template
+ 
+# Log files
+*.log
+nohup.out
+ 
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+ 
+# OSS-CRS working directories
+.oss-crs-workdir/
+crs_compose/
+oss-crs/
+ 
+# Run results
+osscrs_results/
+runs/
+ 
+# Build outputs
+build/
+out/
+fuzz-tooling/build/
+ 
+# Staged workspaces
+workspace/
+app/
+ 
+# Editor
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+ 
+# Binary/archive files
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.tar.bz2
+ 
+# Credentials/secrets
+*.pem
+*.key
+*.p12
+.git-credentials
+.netrc
+secrets/

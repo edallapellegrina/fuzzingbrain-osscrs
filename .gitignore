@@ -1,12 +1,21 @@
 # Environment/configuration files. Only .template variants are committed
+fb-patch/compose/compose.yaml
 *.env
-*.yaml
 !*.env.template
-!*.yaml.template
  
-# Log files
+# FuzzingBrain run artefacts 
 *.log
 nohup.out
+*.pid
+repo-address/
+patch_workspace/
+static_analysis/
+security_findings/
+fuzz_target_seed_corpus/
+repo.json
+xp[0-9]*/
+ap[0-9]*/
+successful_povs_advanced/
  
 # Python
 __pycache__/
@@ -15,24 +24,32 @@ __pycache__/
 .venv/
 venv/
 env/
+*.egg-info/
  
 # OSS-CRS working directories
 .oss-crs-workdir/
 crs_compose/
-oss-crs/
- 
-# Run results
-osscrs_results/
 runs/
+osscrs_results/
+
+# Upstream checkouts
+/oss-crs/
+/oss-fuzz/
  
 # Build outputs
 build/
 out/
-fuzz-tooling/build/
+*.o
+*.a
+*.so
  
 # Staged workspaces
+fb-workspace/
 workspace/
-app/
+/app/
+targets/*/repo/
+targets/*/repo-address/
+targets/*/fuzz-tooling/
  
 # Editor
 .vscode/
@@ -47,6 +64,7 @@ Thumbs.db
 *.tar.gz
 *.tgz
 *.tar.bz2
+*.bin
  
 # Credentials/secrets
 *.pem

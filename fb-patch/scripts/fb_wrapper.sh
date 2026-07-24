@@ -123,10 +123,9 @@ echo "[wrapper] LLM endpoint: ${LLM_BASE}"
 echo "[wrapper] PYTHONPATH:   ${PYTHONPATH}"
 echo "[wrapper] exec: /app/FuzzingBrain.sh --in-place $WORKSPACE"
 
+FB_EXIT=0
 # Run FuzzingBrain
-/app/FuzzingBrain.sh --in-place "$WORKSPACE"
-# Save FuzzingBrain's exit status 
-FB_EXIT=$?
+/app/FuzzingBrain.sh --in-place "$WORKSPACE" || FB_EXIT=$?
 echo "[wrapper] FuzzingBrain exited with status $FB_EXIT"
 
 # # Submit discovered POVs

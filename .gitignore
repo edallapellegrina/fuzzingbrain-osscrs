@@ -50,6 +50,7 @@ workspace/
 targets/*/repo/
 targets/*/repo-address/
 targets/*/fuzz-tooling/
+targets/cjson/diff/
  
 # Editor
 .vscode/

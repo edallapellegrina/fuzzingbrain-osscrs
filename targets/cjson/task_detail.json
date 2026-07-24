@@ -1,6 +1,6 @@
 {
   "task_id": "74d769fd-c628-4093-888c-0453a1ab20d5",
-  "type": "delta",
+  "type": "full",
   "harnesses_included": true,
   "deadline": 1775643274000,
   "focus": "repo",

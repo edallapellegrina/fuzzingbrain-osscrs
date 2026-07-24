@@ -1,0 +1,8 @@
+homepage: "https://github.com/DaveGamble/cJSON"
+language: c
+primary_contact: "test@example.com"
+main_repo: "https://github.com/DaveGamble/cJSON.git"
+sanitizers:
+  - address
+fuzzing_engines:
+  - libfuzzer

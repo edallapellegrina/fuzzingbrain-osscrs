@@ -1,0 +1,51 @@
+#!/bin/bash
+#
+# compile_target -- build-phase entry point for the FuzzingBrain CRS.
+#
+# Responsibilities:
+#   1. Compile the target's fuzzer harnesses using OSS-Fuzz's `compile`
+#   2. Hand the resulting artefacts to OSS-CRS via libCRS, so the framework
+#      can make them available to the CRS run phase
+
+set -e
+
+echo "[compile_target] SANITIZER=${SANITIZER:-<unset>}  OUT=${OUT:-<unset>}"
+
+# ---------------------------------------------------------------------------
+# 1. Compile the harnesses (sanitizer-instrumented, per $SANITIZER).
+#    `compile` is provided by the OSS-Fuzz base-builder image and runs the
+#    target's own build.sh.
+# ---------------------------------------------------------------------------
+compile
+
+echo "[compile_target] compile finished; artefacts in $OUT:"
+ls -la "$OUT" | sed 's/^/    /'
+
+# ---------------------------------------------------------------------------
+# 2. Submit the build output.
+#
+#    The output name ("build") must match an entry under
+#    target_build_phase[].outputs in oss-crs/crs.yaml.
+# ---------------------------------------------------------------------------
+libCRS submit-build-output "$OUT" build
+echo "[compile_target] submitted build output"
+
+# ---------------------------------------------------------------------------
+# 3. (Optional) Submit the source tree.
+#
+#    Disabled by default: crs.yaml currently declares only `build` as an
+#    output. To enable this, add `- src` under target_build_phase[].outputs
+#    in crs.yaml and uncomment the line below.
+# ---------------------------------------------------------------------------
+# libCRS submit-build-output "$SRC" src
+
+# ---------------------------------------------------------------------------
+# 4. (Optional) Submit the build-time fetch directory, when the framework
+#    provides one. It carries task inputs such as the diff for delta-scan
+#    tasks. Requires a corresponding `- fetch` entry in crs.yaml outputs.
+# ---------------------------------------------------------------------------
+# if [ -d "/OSS_CRS_FETCH_DIR" ] && [ -n "$(ls -A /OSS_CRS_FETCH_DIR 2>/dev/null)" ]; then
+#     libCRS submit-build-output /OSS_CRS_FETCH_DIR fetch || true
+# fi
+
+echo "[compile_target] done"

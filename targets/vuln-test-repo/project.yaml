@@ -1,0 +1,8 @@
+homepage: "https://github.com/edallapellegrina/fuzzingbrain-osscrs"
+language: c++
+primary_contact: "test@example.com"
+main_repo: "https://github.com/edallapellegrina/fuzzingbrain-osscrs"
+sanitizers:
+  - address
+fuzzing_engines:
+  - libfuzzer

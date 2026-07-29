@@ -1,0 +1,20 @@
+diff --git a/oss_crs/src/templates/run-crs-compose.docker-compose.yaml.j2 b/oss_crs/src/templates/run-crs-compose.docker-compose.yaml.j2
+index cc481da..c717ddf 100644
+--- a/oss_crs/src/templates/run-crs-compose.docker-compose.yaml.j2
++++ b/oss_crs/src/templates/run-crs-compose.docker-compose.yaml.j2
+@@ -28,6 +28,7 @@ services:
+ {%- for env_key, env_value in module_envs[crs.name + "_" + module_name].items() %}
+       - {{ env_key }}={{ env_value }}
+ {%- endfor %}
++      - OSS_CRS_SHARED_DIR_HOST={{ work_dir.get_shared_dir(crs.name, target, run_id, sanitizer) }}
+ {%- if llm_context is defined and llm_context.mode == "internal" %}
+     depends_on:
+       oss-crs-litellm-key-gen:
+@@ -60,6 +61,7 @@ services:
+ {%- endif %}
+       - {{ fuzz_proj_path }}:/OSS_CRS_FUZZ_PROJ:ro
+       - {{ target_source_path }}:/OSS_CRS_TARGET_SOURCE:ro
++      - /var/run/docker.sock:/var/run/docker.sock
+ {%- if bug_fix_ensemble and not crs.config.is_bug_fixing_ensemble %}
+     attach: false
+ {%- endif %}

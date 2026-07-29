@@ -1,153 +1,222 @@
 #!/bin/bash
-
 # ==============================================================================
-# OSS-CRS -> FuzzingBrain wrapper
+# OSS-CRS -> FuzzingBrain wrapper (Path B: framework-native)
 #
-# This script prepares the execution environment expected by FuzzingBrain when
-# running inside the OSS-CRS framework.
+# This wrapper consumes the target through the OSS-CRS runtime interface
+# (the OSS_CRS_* environment variables and mounts) rather than expecting a
+# pre-staged /app/workspace. It assembles the workspace layout FuzzingBrain
+# expects from those mounts, runs FuzzingBrain, then copies any POVs back
+# into $OSS_CRS_SUBMIT_DIR.
 #
-# Tasks:
-#   - Validate the target workspace
-#   - Configure the Python environment
-#   - Configure LLM endpoints
-#   - Launch FuzzingBrain
-#   - Collect generated POVs and patches
-#   - Submit results back through libCRS
+# Framework inputs (provided by OSS-CRS at run time):
+#   $OSS_CRS_TARGET          project name, e.g. "cjson"
+#   $OSS_CRS_TARGET_HARNESS  harness binary name, e.g. "fuzz_target"
+#   $OSS_CRS_TARGET_SOURCE   target source tree (a git repo)
+#   $OSS_CRS_FUZZ_PROJ       OSS-Fuzz project dir (Dockerfile, build.sh, project.yaml)
+#   $OSS_CRS_BUILD_OUT_DIR   built harness output (contains build/<harness>)
+#   $OSS_CRS_FETCH_DIR       task inputs: diffs/, seeds/, povs/, bug-candidates/
+#   $OSS_CRS_SUBMIT_DIR      where discovered POVs must be written
+#   $OSS_CRS_SHARED_DIR      scratch space shared across phases
 # ==============================================================================
 
-# Exit immediately if:
-#   - a command fails (-e)
-#   - an undefined variable is used (-u)
-#   - any command in a pipeline fails (-o pipefail)
-set -euo pipefail
+set -uo pipefail   # NOTE: intentionally NOT -e; we manage exit codes explicitly
 
-# Read configuration from environment variables
-# Target project/workspace
-TARGET="${FUZZBRAIN_TARGET:-${OSS_CRS_TARGET:-example}}"
-# Workspace directory for the selected target
-WORKSPACE="/app/workspace/${TARGET}"
-# Project name (used later when locating output files)
-PROJECT="${TARGET}"
-# Sanitizer used by the fuzzing build
+log() { echo "[wrapper] $*"; }
+
+# ------------------------------------------------------------------------------
+# 0. Resolve inputs from the framework environment
+# ------------------------------------------------------------------------------
+TARGET="${OSS_CRS_TARGET:?OSS_CRS_TARGET not set}"
+HARNESS="${OSS_CRS_TARGET_HARNESS:-fuzz_target}"
 SAN="${SANITIZER:-address}"
-# Optional harness selection
-HARNESS="${OSS_CRS_TARGET_HARNESS:-}"
+SRC_DIR="${OSS_CRS_TARGET_SOURCE:?OSS_CRS_TARGET_SOURCE not set}"
+FUZZ_PROJ="${OSS_CRS_FUZZ_PROJ:?OSS_CRS_FUZZ_PROJ not set}"
+BUILD_OUT="${OSS_CRS_BUILD_OUT_DIR:?OSS_CRS_BUILD_OUT_DIR not set}"
+FETCH_DIR="${OSS_CRS_FETCH_DIR:-}"
+SUBMIT_DIR="${OSS_CRS_SUBMIT_DIR:-/tmp/submit}"
 
-# Validate the workspace
-# Ensure the workspace exists
-if [ ! -d "$WORKSPACE" ]; then
-    echo "[wrapper] ERROR: /app/workspace/${TARGET} does not exist in container." >&2
-    echo "[wrapper] Available targets:" >&2
-    ls -1 /app/workspace/ 2>/dev/null | sed 's/^/  /' >&2 || true
-    exit 1
+# Build the workspace at a path that is identical inside the container and on
+# the host, so inner OSS-Fuzz containers (spawned by FuzzingBrain via the Docker
+# socket) resolve bind mounts correctly
+HOST_SHARED="${OSS_CRS_SHARED_DIR_HOST:-}"
+if [ -n "${HOST_SHARED}" ] && [ "${HOST_SHARED}" != "${OSS_CRS_SHARED_DIR}" ]; then
+    # Recreate the host directory path inside the container, pointing at the
+    # same bind-mounted content, so $WS is valid on both sides
+    mkdir -p "$(dirname "${HOST_SHARED}")"
+    ln -sfn "${OSS_CRS_SHARED_DIR}" "${HOST_SHARED}"
+    WS_ROOT="${HOST_SHARED}"
+else
+    WS_ROOT="${OSS_CRS_SHARED_DIR:-/app/workspace}"
 fi
-# Ensure this is a valid FuzzingBrain workspace
-if [ ! -f "$WORKSPACE/task_detail.json" ]; then
-    echo "[wrapper] ERROR: $WORKSPACE/task_detail.json missing — not a valid FuzzingBrain workspace" >&2
-    exit 1
+WS="${WS_ROOT}/${TARGET}"
+
+log "target=${TARGET} harness=${HARNESS} sanitizer=${SAN}"
+log "assembling workspace at ${WS}"
+
+# ------------------------------------------------------------------------------
+# 1. Fresh workspace skeleton
+# ------------------------------------------------------------------------------
+rm -rf "${WS}"
+mkdir -p "${WS}/repo" \
+         "${WS}/fuzz-tooling/projects/${TARGET}" \
+         "${WS}/fuzz-tooling/build/out/${TARGET}-${SAN}" \
+         "${WS}/diff"
+cp -a "${WS}/repo" "${WS}/repo-${SAN}"
+
+# ------------------------------------------------------------------------------
+# 2. repo/  <-  the target source (a git repo). Copy, not symlink, because
+#    FuzzingBrain writes into the tree and we must not mutate the framework mount.
+# ------------------------------------------------------------------------------
+log "populating repo/ from ${SRC_DIR}"
+cp -a "${SRC_DIR}/." "${WS}/repo/"
+
+# ------------------------------------------------------------------------------
+# 3. fuzz-tooling/  <-  OSS-Fuzz infra (helper.py etc.) + this project's files
+#
+#    FuzzingBrain calls fuzz-tooling/infra/helper.py (line ~471). $OSS_CRS_FUZZ_PROJ
+#    only carries the project files, not infra/, so we clone a shallow OSS-Fuzz for
+#    infra/. If a local OSS-Fuzz is baked into the image, prefer that to avoid net.
+# ------------------------------------------------------------------------------
+if [ -f /app/oss-fuzz/infra/helper.py ]; then
+    log "using bundled OSS-Fuzz infra"
+    cp -a /app/oss-fuzz/infra "${WS}/fuzz-tooling/infra"
+else
+    log "cloning shallow OSS-Fuzz for infra/"
+    git clone --depth 1 https://github.com/google/oss-fuzz.git /tmp/oss-fuzz-infra 2>/dev/null \
+        && cp -a /tmp/oss-fuzz-infra/infra "${WS}/fuzz-tooling/infra" \
+        || { log "ERROR: could not obtain OSS-Fuzz infra/"; }
 fi
 
-echo "[wrapper] Using workspace: $WORKSPACE"
-cat "$WORKSPACE/task_detail.json" | head -20
+# project files (Dockerfile, build.sh, project.yaml) for this target only
+cp -a "${FUZZ_PROJ}/." "${WS}/fuzz-tooling/projects/${TARGET}/"
 
-# Create directories for generated artifacts
-mkdir -p /artifacts/povs /artifacts/corpus
-# Register output dirs with libCRS [currently disabled]
-#libCRS register-submit-dir pov /artifacts/povs || true
-#libCRS register-submit-dir seed /artifacts/corpus || true
+# ------------------------------------------------------------------------------
+# 4. Pre-built harness  <-  BUILD_OUT/build/*  into the location FuzzingBrain
+#    reads (fuzz-tooling/build/out/<target>-<san>/), AND into each per-attempt 
+#    dir it mounts as /out. This lets FuzzingBrain skip rebuilding, since
+#    OSS-CRS already built the target.
+# ------------------------------------------------------------------------------
+FUZZ_OUT_DIR="${WS}/fuzz-tooling/build/out/${TARGET}-${SAN}"
+if [ -d "${BUILD_OUT}/build" ]; then
+    log "copying pre-built harness from ${BUILD_OUT}/build"
+    cp -a "${BUILD_OUT}/build/." "${FUZZ_OUT_DIR}/"
 
-# Stage sitecustomize.py at /app/patchdir/.
-# Python automatically imports sitecustomize.py during startup.
-# This is used here to patch LiteLLM so that every Python process automatically uses the desired LLM endpoint.
+    # FuzzingBrain mounts per-attempt dirs (xp*/ap*) as /out and executes
+    # /out/<harness> there, so each must contain the harness binary and the
+    # symbolizer -- not just the candidate blob the strategy copies in.
+    for d in xp0 xp1 xp2 xp3 xp4 ap0 ap1 ap2 ap3 ap4; do
+        mkdir -p "${FUZZ_OUT_DIR}/${d}"
+        cp -a "${BUILD_OUT}/build/." "${FUZZ_OUT_DIR}/${d}/" 2>/dev/null || true
+    done
+    log "seeded xp*/ap* attempt dirs with harness binary"
+else
+    log "WARN: ${BUILD_OUT}/build not found; FuzzingBrain will build from source"
+fi
+
+# ------------------------------------------------------------------------------
+# 5. diff/  <-  the delta. Prefer a diff supplied by the framework; otherwise, if
+#    the repo carries a base/delta relationship, generate it. If neither, treat as
+#    a full-scan task (no diff).
+# ------------------------------------------------------------------------------
+MODE="full"
+if [ -n "${FETCH_DIR}" ] && compgen -G "${FETCH_DIR}/diffs/*" >/dev/null 2>&1; then
+    log "using framework-provided diff from ${FETCH_DIR}/diffs/"
+    cp -a "${FETCH_DIR}/diffs/." "${WS}/diff/"
+    # normalise to ref.diff if a single file was provided under another name
+    if [ ! -f "${WS}/diff/ref.diff" ]; then
+        first_diff=$(find "${WS}/diff" -type f | head -1)
+        [ -n "${first_diff}" ] && cp "${first_diff}" "${WS}/diff/ref.diff"
+    fi
+    MODE="delta"
+elif [ -f "${FUZZ_PROJ}/ref.diff" ]; then
+    log "using ref.diff shipped in the OSS-Fuzz project dir"
+    cp "${FUZZ_PROJ}/ref.diff" "${WS}/diff/ref.diff"
+    MODE="delta"
+else
+    log "no diff provided; treating as FULL-scan task"
+    rm -rf "${WS}/diff"
+fi
+
+# ------------------------------------------------------------------------------
+# 6. task_detail.json  <-  synthesised from the framework environment
+# ------------------------------------------------------------------------------
+DEADLINE_MS=$(( ( $(date +%s) + 4*3600 ) * 1000 ))
+cat > "${WS}/task_detail.json" <<EOF
+{
+  "task_id": "$(cat /proc/sys/kernel/random/uuid 2>/dev/null || echo run-${OSS_CRS_RUN_ID:-0})",
+  "type": "${MODE}",
+  "harnesses_included": true,
+  "deadline": ${DEADLINE_MS},
+  "focus": "repo",
+  "project_name": "${TARGET}",
+  "source": null,
+  "metadata": {},
+  "state": ""
+}
+EOF
+log "wrote task_detail.json (type=${MODE})"
+cp "${WS}/task_detail.json" "${WS}/fuzz-tooling/build/out/${TARGET}-${SAN}/task_detail.json"
+
+# ------------------------------------------------------------------------------
+# 7. LLM routing (unchanged from before): stage sitecustomize + write .env
+# ------------------------------------------------------------------------------
 mkdir -p /app/patchdir
-if [ -f /usr/lib/python3.10/sitecustomize.py ] && \
-   [ ! -f /app/patchdir/sitecustomize.py ]; then
+if [ -f /usr/lib/python3.10/sitecustomize.py ] && [ ! -f /app/patchdir/sitecustomize.py ]; then
     cp /usr/lib/python3.10/sitecustomize.py /app/patchdir/sitecustomize.py
 fi
-# Ensure Python loads the custom startup module first
 export PYTHONPATH="/app/patchdir${PYTHONPATH:+:$PYTHONPATH}"
 
-# Configure LLM access
-mkdir -p /app/crs
-# Default OpenAI-compatible endpoint
-LLM_BASE="${FUZZBRAIN_LLM_ENDPOINT:-http://host.docker.internal:11435/v1}"
-# Some APIs expect the base URL without "/v1"
+LLM_BASE="${FUZZBRAIN_LLM_ENDPOINT:-http://172.17.0.1:11435/v1}"
 LLM_BASE_NO_V1="${LLM_BASE%/v1}"
-# Generate FuzzingBrain's .env configuration file
+mkdir -p /app/crs
 cat > /app/crs/.env <<EOF
 OPENAI_API_KEY=${OPENAI_API_KEY:-ollama}
 OPENAI_BASE_URL=${LLM_BASE}
 OPENAI_API_BASE=${LLM_BASE}
 ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-ollama}
 ANTHROPIC_BASE_URL=${LLM_BASE_NO_V1}
-GEMINI_API_KEY=${GEMINI_API_KEY:-}
-XAI_API_KEY=${XAI_API_KEY:-}
 PYTHONPATH=/app/patchdir
-
-# Strategy configuration
 STRATEGY_BASE_DIR=/app/strategy
 STRATEGY_NEW_DIR=jeff
 STRATEGY_POV_ADVANCED_DELTA_PATTERN=xs0_delta.py
 STRATEGY_POV_ADVANCED_FULL_PATTERN=as0_full.py
-STRATEGY_PATCH_DELTA_PATTERN=patch0_delta.py
-STRATEGY_PATCH_FULL_PATTERN=patch0_full.py
-
-# Strategy selection
 STRATEGY_POV_SELECTED_BASIC="none"
 STRATEGY_POV_SELECTED_ADVANCED=""
-STRATEGY_PATCH_SELECTED="none"
-STRATEGY_XPATCH_SELECTED="none"
 STRATEGY_ENABLE_PATCHING=false
-
-# Disable OpenTelemetry reporting
 OTEL_SDK_DISABLED=true
-
-# Fuzzer configuration
 ADVANCED_FUZZER_TEST=1
-DETECT_TIMEOUT_CRASH=0
-DETECT_LEAK_AS_CRASH=0
-FUZZER_SANITIZERS="address"
-FUZZER_PREFERRED_SANITIZER="address"
+FUZZER_SANITIZERS="${SAN}"
+FUZZER_PREFERRED_SANITIZER="${SAN}"
 FUZZER_DISCOVERY_MODE="auto"
 EOF
-echo "[wrapper] Wrote /app/crs/.env (LLM endpoint: ${LLM_BASE})"
+export OPENAI_API_KEY="${OPENAI_API_KEY:-ollama}" ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-ollama}"
+export OPENAI_BASE_URL="${LLM_BASE}" OPENAI_API_BASE="${LLM_BASE}" ANTHROPIC_BASE_URL="${LLM_BASE_NO_V1}"
+log "LLM endpoint: ${LLM_BASE}"
 
-# Export the same variables so the current shell and child processes also inherit them
-export OPENAI_API_KEY="${OPENAI_API_KEY:-ollama}"
-export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-ollama}"
-export OPENAI_BASE_URL="${LLM_BASE}"
-export OPENAI_API_BASE="${LLM_BASE}"
-export ANTHROPIC_BASE_URL="${LLM_BASE_NO_V1}"
-
-echo "[wrapper] LLM endpoint: ${LLM_BASE}"
-echo "[wrapper] PYTHONPATH:   ${PYTHONPATH}"
-echo "[wrapper] exec: /app/FuzzingBrain.sh --in-place $WORKSPACE"
-
+# ------------------------------------------------------------------------------
+# 8. Run FuzzingBrain against the assembled workspace
+# ------------------------------------------------------------------------------
+log "launching FuzzingBrain: /app/FuzzingBrain.sh --in-place ${WS}"
 FB_EXIT=0
-# Run FuzzingBrain
-/app/FuzzingBrain.sh --in-place "$WORKSPACE" || FB_EXIT=$?
-echo "[wrapper] FuzzingBrain exited with status $FB_EXIT"
+/app/FuzzingBrain.sh --in-place "${WS}" || FB_EXIT=$?
+log "FuzzingBrain exited with status ${FB_EXIT}"
 
-# # Submit discovered POVs
-echo "[wrapper] Submitting POVs via libCRS"
-
-# FuzzingBrain stores crash inputs under fuzz-tooling/build/out/<project>-<sanitizer>/.../xp*/x_*.bin
-FUZZ_OUT="$WORKSPACE/fuzz-tooling/build/out/${PROJECT}-${SAN}"
-if [ -d "$FUZZ_OUT" ]; then
-    find "$FUZZ_OUT" -path "*/xp*/x_*.bin" -type f 2>/dev/null | while read -r povfile; do
-        echo "[wrapper] Submitting POV: $povfile"
-        libCRS submit pov "$povfile" || echo "[wrapper] Submit failed for $povfile"
-    done
+# ------------------------------------------------------------------------------
+# 9. Propagate POVs via libCRS interface
+# ------------------------------------------------------------------------------
+# mkdir -p "${SUBMIT_DIR}"
+FUZZ_OUT="${WS}/fuzz-tooling/build/out/${TARGET}-${SAN}"
+count=0
+if [ -d "${FUZZ_OUT}" ]; then
+    while IFS= read -r pov; do
+        if libCRS submit pov "${pov}"; then
+            log "submitted POV: ${pov}"
+            count=$((count+1))
+        else
+            log "WARN: libCRS submit failed for ${pov}"
+        fi
+    done < <(find "${FUZZ_OUT}" -path "*/xp*/x_*.bin" -type f 2>/dev/null)
 fi
+log "submitted ${count} POV(s) via libCRS"
 
-# Submit generated patches
-PATCH_DIR="$FUZZ_OUT/successful_patches"
-if [ -d "$PATCH_DIR" ]; then
-    find "$PATCH_DIR" \( -name "*.patch" -o -name "*.diff" \) -type f 2>/dev/null | while read -r patchfile; do
-        echo "[wrapper] Submitting patch: $patchfile"
-        libCRS submit patch "$patchfile" || echo "[wrapper] Submit failed for $patchfile"
-    done
-fi
-
-# Return FuzzingBrain's exit code to the caller
-exit $FB_EXIT
+exit "${FB_EXIT}"

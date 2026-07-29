@@ -1,4 +1,4 @@
-# Latest FuzzingBrain image
+# FuzzingBrain Docker image
 FROM ghcr.io/o2lab/fuzzingbrain@sha256:6da1d1d417c1c02d3e72a8f0dc69bcea535b74a7c7b5351fed667d8e11b71431
 
 # libCRS

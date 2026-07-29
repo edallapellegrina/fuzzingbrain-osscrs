@@ -1,6 +1,6 @@
 #!/bin/bash
 # ==============================================================================
-# OSS-CRS -> FuzzingBrain wrapper (Path B: framework-native)
+# OSS-CRS -> FuzzingBrain wrapper
 #
 # This wrapper consumes the target through the OSS-CRS runtime interface
 # (the OSS_CRS_* environment variables and mounts) rather than expecting a
@@ -19,7 +19,7 @@
 #   $OSS_CRS_SHARED_DIR      scratch space shared across phases
 # ==============================================================================
 
-set -uo pipefail   # NOTE: intentionally NOT -e; we manage exit codes explicitly
+set -uo pipefail
 
 log() { echo "[wrapper] $*"; }
 
@@ -64,18 +64,13 @@ mkdir -p "${WS}/repo" \
 cp -a "${WS}/repo" "${WS}/repo-${SAN}"
 
 # ------------------------------------------------------------------------------
-# 2. repo/  <-  the target source (a git repo). Copy, not symlink, because
-#    FuzzingBrain writes into the tree and we must not mutate the framework mount.
+# 2. repo/  <-  the target source (a git repo)
 # ------------------------------------------------------------------------------
 log "populating repo/ from ${SRC_DIR}"
 cp -a "${SRC_DIR}/." "${WS}/repo/"
 
 # ------------------------------------------------------------------------------
-# 3. fuzz-tooling/  <-  OSS-Fuzz infra (helper.py etc.) + this project's files
-#
-#    FuzzingBrain calls fuzz-tooling/infra/helper.py (line ~471). $OSS_CRS_FUZZ_PROJ
-#    only carries the project files, not infra/, so we clone a shallow OSS-Fuzz for
-#    infra/. If a local OSS-Fuzz is baked into the image, prefer that to avoid net.
+# 3. fuzz-tooling/  <-  OSS-Fuzz infra (helper.py etc.)
 # ------------------------------------------------------------------------------
 if [ -f /app/oss-fuzz/infra/helper.py ]; then
     log "using bundled OSS-Fuzz infra"
@@ -92,7 +87,7 @@ cp -a "${FUZZ_PROJ}/." "${WS}/fuzz-tooling/projects/${TARGET}/"
 
 # ------------------------------------------------------------------------------
 # 4. Pre-built harness  <-  BUILD_OUT/build/*  into the location FuzzingBrain
-#    reads (fuzz-tooling/build/out/<target>-<san>/), AND into each per-attempt 
+#    reads (fuzz-tooling/build/out/<target>-<san>/), and into each per-attempt 
 #    dir it mounts as /out. This lets FuzzingBrain skip rebuilding, since
 #    OSS-CRS already built the target.
 # ------------------------------------------------------------------------------
@@ -114,9 +109,7 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# 5. diff/  <-  the delta. Prefer a diff supplied by the framework; otherwise, if
-#    the repo carries a base/delta relationship, generate it. If neither, treat as
-#    a full-scan task (no diff).
+# 5. diff/  <-  the delta
 # ------------------------------------------------------------------------------
 MODE="full"
 if [ -n "${FETCH_DIR}" ] && compgen -G "${FETCH_DIR}/diffs/*" >/dev/null 2>&1; then
@@ -158,7 +151,7 @@ log "wrote task_detail.json (type=${MODE})"
 cp "${WS}/task_detail.json" "${WS}/fuzz-tooling/build/out/${TARGET}-${SAN}/task_detail.json"
 
 # ------------------------------------------------------------------------------
-# 7. LLM routing (unchanged from before): stage sitecustomize + write .env
+# 7. LLM routing: stage sitecustomize + write .env
 # ------------------------------------------------------------------------------
 mkdir -p /app/patchdir
 if [ -f /usr/lib/python3.10/sitecustomize.py ] && [ ! -f /app/patchdir/sitecustomize.py ]; then
@@ -182,7 +175,7 @@ STRATEGY_POV_ADVANCED_DELTA_PATTERN=xs0_delta.py
 STRATEGY_POV_ADVANCED_FULL_PATTERN=as0_full.py
 STRATEGY_POV_SELECTED_BASIC="none"
 STRATEGY_POV_SELECTED_ADVANCED=""
-STRATEGY_ENABLE_PATCHING=false
+STRATEGY_ENABLE_PATCHING=true
 OTEL_SDK_DISABLED=true
 ADVANCED_FUZZER_TEST=1
 FUZZER_SANITIZERS="${SAN}"

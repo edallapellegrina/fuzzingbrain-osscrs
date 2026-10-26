@@ -212,6 +212,24 @@ if [ -d "${FUZZ_OUT}" ]; then
 fi
 log "submitted ${count} POV(s) via libCRS"
 
+# ------------------------------------------------------------------------------
+# 10. Propagate validated patches via libCRS. Only successful_patches/ holds
+#     patches FuzzingBrain has rebuilt and re-tested against the POV; other
+#     *.diff files in the workspace are inputs, OSS-Fuzz infra, or candidates.
+# ------------------------------------------------------------------------------
+patch_count=0
+while IFS= read -r patchfile; do
+    if libCRS submit patch "${patchfile}"; then
+        log "submitted patch: ${patchfile}"
+        patch_count=$((patch_count+1))
+    else
+        log "WARN: libCRS submit patch failed for ${patchfile}"
+    fi
+done < <(find "${WS}" -path "*/successful_patches/*.diff" -type f 2>/dev/null | sort -u)
+log "submitted ${patch_count} patch(es) via libCRS"
+
+# FuzzingBrain is SIGKILLed during post-success strategy cancellation in some
+# configurations; if artefacts were submitted, the run succeeded.
 if [ "${FB_EXIT}" -ne 0 ] && [ "${count}" -gt 0 ]; then
     log "artefacts submitted despite exit ${FB_EXIT}; reporting success"
     FB_EXIT=0

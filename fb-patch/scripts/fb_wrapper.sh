@@ -191,7 +191,7 @@ log "LLM endpoint: ${LLM_BASE}"
 # ------------------------------------------------------------------------------
 log "launching FuzzingBrain: /app/FuzzingBrain.sh --in-place ${WS}"
 FB_EXIT=0
-/app/FuzzingBrain.sh --in-place "${WS}" || FB_EXIT=$?
+setsid /app/FuzzingBrain.sh --in-place "${WS}" || FB_EXIT=$?
 log "FuzzingBrain exited with status ${FB_EXIT}"
 
 # ------------------------------------------------------------------------------
@@ -208,8 +208,13 @@ if [ -d "${FUZZ_OUT}" ]; then
         else
             log "WARN: libCRS submit failed for ${pov}"
         fi
-    done < <(find "${FUZZ_OUT}" -path "*/xp*/x_*.bin" -type f 2>/dev/null)
+    done < <(find "${FUZZ_OUT}" -path "*/successful_povs_advanced/*.bin" -type f 2>/dev/null | sort -u)
 fi
 log "submitted ${count} POV(s) via libCRS"
+
+if [ "${FB_EXIT}" -ne 0 ] && [ "${count}" -gt 0 ]; then
+    log "artefacts submitted despite exit ${FB_EXIT}; reporting success"
+    FB_EXIT=0
+fi
 
 exit "${FB_EXIT}"

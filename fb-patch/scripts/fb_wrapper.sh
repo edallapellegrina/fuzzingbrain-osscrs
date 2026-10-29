@@ -92,18 +92,49 @@ cp -a "${FUZZ_PROJ}/." "${WS}/fuzz-tooling/projects/${TARGET}/"
 #    OSS-CRS already built the target.
 # ------------------------------------------------------------------------------
 FUZZ_OUT_DIR="${WS}/fuzz-tooling/build/out/${TARGET}-${SAN}"
+PRISTINE="${WS_ROOT}/.pristine-build-${TARGET}"
 if [ -d "${BUILD_OUT}/build" ]; then
     log "copying pre-built harness from ${BUILD_OUT}/build"
-    cp -a "${BUILD_OUT}/build/." "${FUZZ_OUT_DIR}/"
+    rm -rf "${PRISTINE}" && mkdir -p "${PRISTINE}"
+    cp -a "${BUILD_OUT}/build/." "${PRISTINE}/" # the one real copy
 
-    # FuzzingBrain mounts per-attempt dirs (xp*/ap*) as /out and executes
-    # /out/<harness> there, so each must contain the harness binary and the
-    # symbolizer -- not just the candidate blob the strategy copies in.
-    for d in xp0 xp1 xp2 xp3 xp4 ap0 ap1 ap2 ap3 ap4; do
+    # FuzzingBrain mounts per-attempt dirs (xp*/ap*) as /out and runs
+    # /out/<harness> there. Populate them with HARD LINKS to the single copy:
+    # JVM builds carry a Maven repo and jars (GBs), and real copies per attempt
+    # dir exhaust the disk. FuzzingBrain only adds blobs to these dirs and never
+    # rewrites build files, so sharing them is safe. Falls back to a real copy
+    # if linking isn't possible.
+    for d in "" xp0 xp1 xp2 xp3 xp4 ap0 ap1 ap2 ap3 ap4; do
         mkdir -p "${FUZZ_OUT_DIR}/${d}"
-        cp -a "${BUILD_OUT}/build/." "${FUZZ_OUT_DIR}/${d}/" 2>/dev/null || true
+        cp -al "${PRISTINE}/." "${FUZZ_OUT_DIR}/${d}/" 2>/dev/null \
+            || cp -a "${PRISTINE}/." "${FUZZ_OUT_DIR}/${d}/"
     done
-    log "seeded xp*/ap* attempt dirs with harness binary"
+    log "seeded xp*/ap* attempt dirs with harness binary (hard links)"
+    # Restrict FuzzingBrain to the requested harness. 
+    is_harness() {
+        local f="$1" b
+        b=$(basename "$f")
+        [ -f "$f" ] && [ -x "$f" ] || return 1
+        case "$b" in
+            llvm-symbolizer|jazzer_*|*.so|*.so.*|*.jar|*.class|*.zip|*.options|*.dict) return 1 ;;
+        esac
+        # libFuzzer binaries carry this symbol; OSS-Fuzz JVM launcher scripts
+        # carry it as a comment so that harness detection finds them.
+        grep -aqs "LLVMFuzzerTestOneInput" "$f"
+    }
+    if is_harness "${FUZZ_OUT_DIR}/${HARNESS}"; then
+        removed=0
+        for d in "${FUZZ_OUT_DIR}" "${FUZZ_OUT_DIR}"/xp* "${FUZZ_OUT_DIR}"/ap*; do
+            [ -d "$d" ] || continue
+            for f in "$d"/*; do
+                [ "$(basename "$f")" = "${HARNESS}" ] && continue
+                if is_harness "$f"; then rm -f "$f"; removed=$((removed+1)); fi
+            done
+        done
+        log "restricted to harness '${HARNESS}' (removed ${removed} other harness file(s))"
+    else
+        log "WARN: '${HARNESS}' not recognised as a harness in ${FUZZ_OUT_DIR}; leaving all harnesses in place"
+    fi
 else
     log "WARN: ${BUILD_OUT}/build not found; FuzzingBrain will build from source"
 fi

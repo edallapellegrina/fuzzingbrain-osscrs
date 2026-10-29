@@ -5,13 +5,13 @@ docker_registry: local
 
 oss_crs_infra:
   cpuset: "0-1"
-  memory: "4G"
+  memory: "8G"
 
 fuzzingbrain:
   source:
     local_path: /path/to/fuzzingbrain
-  cpuset: "2-3"
-  memory: "8G"
+  cpuset: "2-9"
+  memory: "32G"
 
   # Env vars consumed by fb_wrapper.sh and sitecustomize.py
   additional_env:

@@ -29,15 +29,25 @@ POVs     ◄── libCRS submit pov   ◄── successful_povs_advanced/      
 patches  ◄── libCRS submit patch ◄── successful_patches/             ◄──┘
 ```
 
-The workspace is built at a path that is identical inside and outside the
-container, because FuzzingBrain's nested `docker run` bind mounts are resolved
-by the host daemon against the host filesystem.
+Points worth knowing:
+
+- The workspace is built at a path that is identical inside and outside the
+  container, because FuzzingBrain's nested `docker run` bind mounts are
+  resolved by the host daemon against the host filesystem.
+- FuzzingBrain fuzzes every harness it finds. The wrapper removes all harnesses
+  except the one named by `--target-harness`, so the time budget isn't split
+  and results are filed under the right harness.
+- The per-attempt directories FuzzingBrain mounts as `/out` are populated with
+  hard links to a single copy of the build output. JVM builds carry gigabytes
+  of jars and Maven repository, and real copies would multiply that.
 
 Three mechanisms make local inference work without root or API keys:
 
 - **`ollama_relay.py`** — Ollama binds to loopback, unreachable from containers.
-  This user-space TCP relay re-exposes it on the Docker bridge gateway
-  (`172.17.0.1:11435`).
+  This user-space HTTP relay re-exposes it on the Docker bridge gateway
+  (`172.17.0.1:11435`) and rewrites commercial model names (`claude*`, `gpt-*`,
+  …) to the local model. That covers code paths that call the Anthropic or
+  OpenAI SDKs directly and would otherwise bypass `sitecustomize.py`.
 - **`sitecustomize.py`** — a Python interpreter-startup hook that rewrites every
   LiteLLM completion call to the local model. FuzzingBrain's strategies keep
   their hardcoded commercial model names, the traffic is redirected beneath them.
@@ -81,7 +91,8 @@ No root, no NVIDIA Container Toolkit, no commercial LLM API keys.
 ollama pull qwen3-coder:30b
 ```
 
-The model name is set in one place: `fb-patch/sitecustomize.py` (`_MODEL`).
+The model name is set in `fb-patch/sitecustomize.py` (`_MODEL`) and in the relay
+(`RELAY_LOCAL_MODEL`, default `qwen3-coder:30b`); keep the two in agreement.
 Smaller models may not reason well enough to produce POVs.
 
 ---
@@ -114,6 +125,9 @@ bash scripts/verify-relay.sh
 
 `local_path` must point at the directory that contains `oss-crs/crs.yaml`,
 which is `fb-patch/` — not the repository root.
+
+If step 5 fails with *address already in use*, start the relay on another port (`RELAY_LISTEN_PORT=11436`) 
+and update th endpoint in `fb-patch/sitecustomize.py` and the wrapper to match.
 
 There is no workspace staging step: the wrapper assembles FuzzingBrain's
 workspace at runtime from the framework's mounts.
@@ -172,6 +186,9 @@ oss-crs/.oss-crs-workdir/crs_compose/<hash>/address/runs/<run-id>/crs/fuzzingbra
   patches/    validated diffs against the target source
 ```
 
+The full run log is saved alongside, under
+`runs/<run-id>/logs/<target>_<hash>/<harness>/docker-compose.stdout.log`.
+
 ---
 
 ## Adding a new target
@@ -185,6 +202,10 @@ A target is defined by files in `targets/<name>/`:
 | `build.sh` | Compiles the harness to `$OUT/<harness>` | always |
 | `diff/ref.diff` | `base..delta` unified diff | delta mode only |
 
+Some projects need more than these — JVM projects in OSS-Fuzz typically carry a
+`project-parent/` directory holding the fuzz targets. When copying an existing
+OSS-Fuzz project, copy the whole directory.
+
 How you produce them depends on where the target comes from.
 
 ### Case A — the project is already in OSS-Fuzz
@@ -194,7 +215,7 @@ Copy them:
 
 ```bash
 mkdir -p targets/<name>
-cp ~/oss-fuzz/projects/<name>/{project.yaml,Dockerfile,build.sh} targets/<name>/
+cp -r ~/oss-fuzz/projects/<name>/. targets/<name>/
 ```
 
 For a full scan you are done. For a delta scan you also need a
@@ -252,7 +273,7 @@ $CC $CFLAGS -I. -c <lib>.c -o <lib>.o
 $CC $CFLAGS -I. tests/fuzz/<harness>.c <lib>.o $LIB_FUZZING_ENGINE -o $OUT/<harness>
 ```
 
-If the repository has no `LLVMFuzzerTestOneInput` harness, write one:
+**A harness.** If the repository has no `LLVMFuzzerTestOneInput` harness, write one:
 
 ```c
 #include <stdint.h>
@@ -358,33 +379,6 @@ progress.
 Resource limits for the CRS container are set in `fb-patch/compose/compose.yaml`.
 The template ships `cpuset: "2-9"` and `memory: "32G"`. With patching enabled,
 FuzzingBrain runs POV and patch strategies in parallel, and 8 GB is not enough.
-
----
-
-## Repository layout
-
-```
-fb-patch/                       the CRS package (source.local_path)
-  oss-crs/
-    crs.yaml                    CRS manifest read by OSS-CRS
-    docker-bake.hcl
-    dockerfiles/{base,builder,runner}.Dockerfile
-  bin/compile_target            build-phase entry point
-  scripts/fb_wrapper.sh         run-phase entry point (baked into the runner image)
-  sitecustomize.py              LiteLLM → local model interceptor
-  ollama_relay.py               user-space TCP relay to Ollama
-  fuzzingbrain.env.template
-  compose/compose.yaml.template
-osscrs-patch/
-  docker.patch                  the required OSS-CRS patch
-  README.md                     what it changes, why, and the base commit
-targets/
-  cjson/                        delta-scan sample
-  vuln-test-repo/               full-scan sample
-scripts/                        host-side operator tools
-  verify-relay.sh
-  cleanup-runs.sh
-```
 
 ---
 
